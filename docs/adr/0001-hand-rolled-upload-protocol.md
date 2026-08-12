@@ -1,0 +1,3 @@
+# Hand-roll the chunked/resumable upload protocol instead of adopting tus.io or S3-multipart semantics
+
+This is a learning effort, not a production system, so we deliberately build our own Upload Session / Manifest / chunk / resume protocol from scratch rather than implementing the existing tus.io resumable-upload standard or mimicking S3's multipart-upload API. The goal is to understand the mechanics (chunk boundaries, resume detection, assembly, integrity checking) firsthand rather than to end up with a spec-compliant or drop-in-compatible server. A future effort could re-target tus.io or S3 semantics once the concepts are internalized.
