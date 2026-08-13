@@ -1,0 +1,5 @@
+# Use a fast, non-cryptographic checksum per Chunk and a cryptographic checksum for the whole file
+
+Every resumable-upload prior art we surveyed (tus, S3 multipart) supports a range of checksum algorithms, and it would be easy to default to SHA-256 everywhere for simplicity. We instead use CRC32C (hardware-accelerated, ~20 GB/s/core) for each Chunk, checked immediately on receipt, and reserve SHA-256 for a single pass over the fully-assembled file at Assembly time.
+
+This is deliberate given the constraints: the server has 1 vCPU shared with Spring Boot's own request handling, and hashing every Chunk of a multi-GB file with a cryptographic hash would compete for that core. The threat model is accidental corruption (truncated request, flaky disk, flipped bit) from a single trusted user, not a malicious uploader forging Chunks — exactly what CRC32C is built to catch cheaply, while SHA-256 remains the end-to-end guarantee where it's cheapest to afford it (once, not per Chunk). See [docs/research/modern-huge-file-transfer.md](../research/modern-huge-file-transfer.md) §5 for the source data behind this trade-off.
