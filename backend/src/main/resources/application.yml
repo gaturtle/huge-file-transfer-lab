@@ -16,3 +16,12 @@ app:
 logging:
   level:
     com.hugefiletransfer: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+  endpoint:
+    health:
+      access: read_only
