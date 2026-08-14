@@ -326,3 +326,15 @@ even when only one side (backend or frontend) has a new image.
   deploy-level disk management needed beyond what issue #4 already decided.
 - **Single point of TLS**: nginx is the only TLS terminator; the backend is never
   reachable except through it (§4).
+
+## 10. Load testing
+
+Before trusting this deployment with a real ~5GB transfer, validate memory behavior
+under the same 1 vCPU / 1GB RAM constraints locally first: see
+[scripts/loadtest/README.md](../../scripts/loadtest/README.md) (issue #18). It drives
+the chunked upload API directly against a Docker container capped at `--cpus=1
+--memory=1g`, `-Xmx256m`, sampling container memory and JVM heap every ~2s, and checks
+against the pass criteria from issue #12 (no OOM-kill, peak effective memory &le; 900MB,
+verified checksum, no pathological GC-pause growth). Once this deployment guide has been
+executed against the real server, `scripts/loadtest/README.md` also covers pointing the
+same harness at it directly for a final smoke test.
