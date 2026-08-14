@@ -1,0 +1,36 @@
+services:
+  backend:
+    image: <DOCKERHUB_USER>/huge-file-transfer-backend:latest
+    restart: unless-stopped
+    mem_limit: 700m
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xmx480m
+      - DB_PATH=/data/db/uploads.db
+      - STAGING_DIR=/data/staging
+      - COMPLETED_DIR=/data/completed
+    volumes:
+      - /srv/huge-file-transfer/db:/data/db
+      - /srv/huge-file-transfer/staging:/data/staging
+      - /srv/huge-file-transfer/completed:/data/completed
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: <DOCKERHUB_USER>/huge-file-transfer-frontend:latest
+    restart: unless-stopped
+    mem_limit: 50m
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
