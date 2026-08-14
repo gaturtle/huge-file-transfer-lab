@@ -266,10 +266,16 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: ./frontend
+          context: .
+          file: ./frontend/Dockerfile
           push: true
           tags: <DOCKERHUB_USER>/huge-file-transfer-frontend:latest
 ```
+
+`frontend/Dockerfile` copies from both `frontend/` and `deploy/` (for `nginx.conf`), so its
+build context must be the repo root with `file:` pointing at the Dockerfile — `context:
+./frontend` would put `deploy/nginx.conf` outside the build context and fail. `backend/Dockerfile`
+only references paths inside `backend/`, so `context: ./backend` is correct as-is.
 
 Requires two repo secrets: `DOCKERHUB_USERNAME` and a `DOCKERHUB_TOKEN` (a Docker Hub
 access token, not your account password).
