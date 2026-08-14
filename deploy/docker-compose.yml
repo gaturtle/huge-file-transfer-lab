@@ -1,6 +1,6 @@
 services:
   backend:
-    image: <DOCKERHUB_USER>/huge-file-transfer-backend:latest
+    image: gaturtle19245/huge-file-transfer-backend:latest
     restart: unless-stopped
     mem_limit: 700m
     environment:
@@ -19,7 +19,7 @@ services:
         max-file: "3"
 
   nginx:
-    image: <DOCKERHUB_USER>/huge-file-transfer-frontend:latest
+    image: gaturtle19245/huge-file-transfer-frontend:latest
     restart: unless-stopped
     mem_limit: 50m
     depends_on:
