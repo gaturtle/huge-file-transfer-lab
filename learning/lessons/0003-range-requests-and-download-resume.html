@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 3 — Range Requests and Download Resume</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<p class="kicker">Lesson 3 of the Huge File Transfer Lab · Concept + your own code</p>
+<h1>Download Is a Different Problem — Mostly Already Solved</h1>
+
+<p>Lessons 1 and 2 covered the <em>upload</em> side: your Upload Session, chunk index, bitset, checksum split — all hand-rolled, on purpose (<a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/docs/adr/0001-hand-rolled-upload-protocol.md">ADR 0001</a>). Download needs the same properties — resumable, bounded memory, parallelizable — but your project built it almost entirely differently. That difference is the lesson.</p>
+
+<h2>Why hand-roll upload but not download</h2>
+
+<p>Uploading a file is fundamentally something HTTP has no native primitive for — there's no standard "resume a POST from where it dropped" mechanism, which is exactly why tus.io and S3 multipart exist as bespoke protocols on top of HTTP, and why your project built its own Upload Session concept to match.</p>
+
+<p><strong>Downloading part of a resource, on the other hand, has been a solved standard since HTTP/1.1.</strong> <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Range_requests">HTTP Range requests</a> let a client ask for a byte range of a resource instead of the whole thing, and every HTTP client (browsers, <code>curl</code>, everything) already speaks it. Your project's own research (<a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/research/modern-huge-file-transfer/docs/research/modern-huge-file-transfer.md">docs/research/modern-huge-file-transfer.md §6</a>) is explicit about this: reuse the standard primitive on the download side, rather than hand-rolling a parallel "download manifest" concept that HTTP already gives you for free.</p>
+
+<div class="callout">
+<strong>The transferable lesson here isn't "how Range requests work."</strong> It's the judgment call itself: <em>ADR 0001 hand-rolls the upload protocol for learning value — and issue #5's design explicitly does not extend that same reasoning to download.</em> Knowing when NOT to reinvent something is as much a design skill as knowing how to build it. A solved standard sitting right there is a reason to stop, not a challenge to out-engineer.
+</div>
+
+<h2>The mechanism: Range, Accept-Ranges, 206, If-Range</h2>
+
+<p>Four pieces, straight from the standard (<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Range">MDN: Range header</a>):</p>
+
+<ul>
+<li><code>Range: bytes=0-8388607</code> — the client asks for a specific byte span (here, the first 8MiB).</li>
+<li><code>Accept-Ranges: bytes</code> — the server advertises that it supports this.</li>
+<li><code>206 Partial Content</code> — the success response, carrying only the requested bytes plus a <code>Content-Range</code> header saying which slice of the total this is.</li>
+<li><code>If-Range</code> — a conditional check tied to a validator (an <code>ETag</code> or a <code>Last-Modified</code> date). If the validator still matches, the server sends the requested <code>206</code> partial; if the underlying resource changed since the client last saw it, the server sends the full <code>200 OK</code> instead — refusing to splice bytes from two different versions of the file together.</li>
+</ul>
+
+<p><code>If-Range</code> is the piece worth sitting with. It's solving the <em>exact same problem</em> upload resume solves with the offset/<code>409</code> pattern from Lesson 1 — "how do I know what I'm resuming still matches what I already have" — just expressed as a standard header instead of your own Upload Session state. Same problem, two different mechanisms, because one side of the transfer had a standard answer and the other didn't.</p>
+
+<h2>What your project actually built</h2>
+
+<p>From <a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/5">issue #5</a>'s resolution:</p>
+
+<h3>Server</h3>
+<ul>
+<li>Same <strong>Upload Id</strong> end-to-end — no separate download identity is minted. <code>GET /uploads/{id}/download</code> serves the bytes once the session is <code>COMPLETE</code>.</li>
+<li>Range parsing is <strong>not hand-parsed</strong> — Spring's built-in <code>ResourceRegion</code>/<code>HttpRange</code> support does it (<a href="https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-range.html">Spring reference docs</a>). Reuse, per the reasoning above.</li>
+<li><code>If-Range</code> is keyed on an <code>ETag</code> built from the <strong>same whole-file SHA-256</strong> checksum computed at Assembly in Lesson 2 — content identity, not a filesystem timestamp. One checksum, two jobs.</li>
+<li><strong>No per-range checksums on the way out.</strong> The assembled file is already a verified, static artifact (Lesson 2's SHA-256 pass proved that once); re-checksumming ranges on every read would burn CPU the single vCPU doesn't have to spare, for a guarantee TLS already provides in transit.</li>
+</ul>
+
+<h3>Client</h3>
+<ul>
+<li>Parallel <code>fetch()</code> calls against ranges aligned to the <strong>same 8MiB unit</strong> used for upload chunks — one chunk-size concept for the whole app, not two.</li>
+<li>Disk writes are the interesting constraint: fetches run in parallel, but they all funnel through <strong>one</strong> <a href="https://developer.mozilla.org/en-US/docs/Web/API/FileSystemWritableFileStream"><code>FileSystemWritableFileStream</code></a>, serialized via positional writes. The File System Access API doesn't support true concurrent writers on one file handle — so parallelism here buys you overlapping <em>network</em> latency, not overlapping <em>disk</em> writes. (Which the 1-vCPU box wasn't going to give you concurrent write throughput for anyway.)</li>
+<li>This is <strong>Chromium/Edge only</strong> — <code>showSaveFilePicker</code>/<code>createWritable()</code> aren't available in Firefox at all, and Safari's support is too recent to rely on. A cross-browser fallback was explicitly ruled out of scope, and the UI feature-detects and shows a disabled state instead of failing silently.</li>
+<li>A received-ranges bitset in IndexedDB mirrors the server's chunk bitset from Lesson 1 — same resume pattern, client side this time. The <code>FileSystemFileHandle</code> itself is also persisted (it's structured-cloneable) and re-permissioned on resume, so the client never has to ask the user to re-pick the file.</li>
+<li>Resume is <strong>user-initiated</strong>, not automatic — matching the upload side's model from Lesson 1.</li>
+<li>After all ranges land, the client recomputes SHA-256 over the whole downloaded file and compares it to the server's checksum. "Every byte range arrived" only proves coverage — it doesn't prove correctness. That's the same distinction ADR 0002 draws between per-chunk and whole-file checks, just run once more, client-side.</li>
+</ul>
+
+<div class="quiz" data-answer="if-range" data-hint="a conditional request header, keyed on an ETag or Last-Modified — the download-side answer to upload's offset/409 pattern">
+<p class="q">Which standard HTTP header does the server use to make sure a resumed download can't silently splice bytes from two different versions of the file?</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="one header name">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<div class="quiz" data-answer="disk writes" data-hint="two words — what the File System Access API forces to be serialized even though the network fetches run in parallel">
+<p class="q">Parallel range fetches overlap network latency, but which single resource still has to be accessed serially through one writable stream, because the File System Access API doesn't allow concurrent writers on one file handle?</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="two words">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<h2>The pattern, generalized</h2>
+
+<p>Before reaching for a bespoke protocol, ask: <em>does a standard already solve this half of the problem?</em> Upload needed one because HTTP has no native resumable-POST concept. Download didn't, because Range requests already are that concept — and had been for decades before this project existed. The skill worth carrying forward isn't "always hand-roll for learning" or "always reuse the standard" — it's making that call deliberately, per problem, instead of applying one instinct uniformly across a whole system.</p>
+
+<div class="callout source">
+<p><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Range_requests">MDN — HTTP range requests</a>. Read this over the raw RFC 9110 §14 text first — it's the same information with runnable examples, and is what your project's own research doc cited as ground truth for §6's Range-request section.</p>
+</div>
+
+<h2>What's next</h2>
+<p>Lessons 1–3 covered the protocol shape end to end: upload, integrity, download. The next lesson moves up a layer — how the frontend's <code>useTransfer</code> hook unifies upload and download behind one shared state model (issue #6's design), and why that unification was possible <em>because</em> both sides converged on the same 8MiB chunk/range unit and bitset-resume pattern.</p>
+
+<div class="callout ask">
+<p>If the "why hand-roll one side but not the other" judgment call doesn't feel intuitive yet, or you want to see the actual <code>DownloadController</code> code (and the real bug issue #17 found and fixed there), ask your teacher (me) now.</p>
+</div>
+
+<footer class="lesson-nav">
+<span><a href="0002-the-checksum-split.html">← Lesson 2: The Checksum Split</a></span>
+<span>Next: unifying upload/download in the frontend (not yet written)</span>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

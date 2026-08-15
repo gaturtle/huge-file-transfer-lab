@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reference — Upload Session State Machine</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<p class="kicker">Reference · print this one</p>
+<h1>Upload Session State Machine</h1>
+
+<p>The compressed shape of the resumable-upload pattern used in the Huge File Transfer Lab. Source of truth: <a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/3">issue #3 — Design the chunk &amp; Upload Session protocol</a> and <a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/4">issue #4 — persistence &amp; staging</a>.</p>
+
+<h2>States</h2>
+
+<div class="state-diagram">
+  <span class="state">UPLOADING</span>
+  <span class="arrow">→</span>
+  <span class="state">ASSEMBLING</span>
+  <span class="arrow">→</span>
+  <span class="state terminal">COMPLETE</span>
+</div>
+<div class="state-diagram">
+  <span class="state">ASSEMBLING</span>
+  <span class="arrow">→</span>
+  <span class="state terminal">FAILED</span>
+</div>
+
+<table style="width:100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem;">
+<tr style="border-bottom:1px solid var(--rule);"><th style="text-align:left; padding:0.4rem 0.5rem;">State</th><th style="text-align:left; padding:0.4rem 0.5rem;">Meaning</th><th style="text-align:left; padding:0.4rem 0.5rem;">Entered when</th></tr>
+<tr style="border-bottom:1px solid var(--rule);"><td style="padding:0.4rem 0.5rem;"><code>UPLOADING</code></td><td style="padding:0.4rem 0.5rem;">Accepting chunks, tracking which have arrived</td><td style="padding:0.4rem 0.5rem;"><code>POST /uploads</code> creates the session</td></tr>
+<tr style="border-bottom:1px solid var(--rule);"><td style="padding:0.4rem 0.5rem;"><code>ASSEMBLING</code></td><td style="padding:0.4rem 0.5rem;">All chunks received; concatenation + whole-file checksum running</td><td style="padding:0.4rem 0.5rem;">Client calls <code>POST /uploads/{id}/complete</code></td></tr>
+<tr style="border-bottom:1px solid var(--rule);"><td style="padding:0.4rem 0.5rem;"><code>COMPLETE</code></td><td style="padding:0.4rem 0.5rem;">Terminal. File assembled, checksum verified.</td><td style="padding:0.4rem 0.5rem;">SHA-256 of assembled file matches Manifest</td></tr>
+<tr><td style="padding:0.4rem 0.5rem;"><code>FAILED</code></td><td style="padding:0.4rem 0.5rem;">Terminal. Not resumable — client must open a fresh session.</td><td style="padding:0.4rem 0.5rem;">Checksum mismatch at Assembly</td></tr>
+</table>
+
+<h2>Key design facts</h2>
+<ul>
+<li><strong>Chunks are addressed by index</strong>, not byte offset. Offset is derived (<code>index × 8MiB</code>), never transmitted.</li>
+<li><strong>Resume</strong> = client asks <code>GET /uploads/{id}</code> for which chunks the server already has (a bitset), then sends only what's missing.</li>
+<li><strong>Storage</strong>: one pre-allocated file per session, chunks written at their final byte offset as they arrive — so Assembly is a checksum pass, not a concatenation (<a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/4">issue #4</a>).</li>
+<li><strong>Checksums are split by purpose</strong> (<a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/docs/adr/0002-split-checksum-algorithm.md">ADR 0002</a>): CRC32C per chunk (fast, hardware-accelerated, catches accidental corruption early) vs. SHA-256 once over the whole file at Assembly (expensive but only paid once).</li>
+<li><strong>FAILED is terminal by design</strong> — a corrupted assembled file isn't trusted to resume from; the fix is a fresh Upload Session with a correct Manifest.</li>
+<li><strong>Abandoned sessions are reclaimed</strong> by a 24h-inactivity TTL sweep, not left to leak disk on a 25GB box.</li>
+</ul>
+
+<h2>Why this shape at all</h2>
+<p>Three properties fall out of "chunk + server-tracked bitset":</p>
+<ul>
+<li><strong>Bounded memory</strong> — the server never buffers a whole 5GB file; it writes each chunk to its offset and streams checksums.</li>
+<li><strong>Resumability</strong> — because the server tracks progress per chunk, a dropped connection loses at most one in-flight chunk, not the whole transfer.</li>
+<li><strong>Parallelism</strong> — chunks are independent, so a client can have 3-4 in flight at once without coordination beyond the index.</li>
+</ul>
+
+<p style="margin-top:2rem;"><a href="../lessons/0001-why-chunk-and-resume.html">← Back to lesson 1</a></p>
+
+</body>
+</html>
