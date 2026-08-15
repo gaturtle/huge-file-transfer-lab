@@ -14,6 +14,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -34,7 +35,13 @@ public class DownloadController {
     }
 
     @GetMapping("/{id}/download")
-    public ResponseEntity<ResourceRegion> download(@PathVariable("id") String uploadId, HttpHeaders requestHeaders) {
+    public ResponseEntity<ResourceRegion> download(
+            @PathVariable("id") String uploadId,
+            @RequestHeader(value = HttpHeaders.RANGE, required = false) String rangeHeader,
+            @RequestHeader(value = HttpHeaders.IF_RANGE, required = false) String ifRange) {
+        // A bare unannotated HttpHeaders parameter is only auto-resolved on WebFlux, not
+        // Spring MVC (servlet) - it falls through to the model-attribute resolver here and
+        // 500s. @RequestHeader on the two headers actually used avoids that trap.
         UploadSession session = uploadService.getSession(uploadId);
         if (session.state() != UploadState.COMPLETE) {
             throw new SessionStateConflictException(
@@ -51,10 +58,9 @@ public class DownloadController {
         }
 
         // If-Range must match the whole-file SHA-256 ETag, not a filesystem timestamp, to be honored.
-        String ifRange = requestHeaders.getFirst(HttpHeaders.IF_RANGE);
         boolean ifRangeMismatch = ifRange != null && !ifRange.equals(etag);
 
-        List<HttpRange> ranges = requestHeaders.getRange();
+        List<HttpRange> ranges = rangeHeader != null ? HttpRange.parseRanges(rangeHeader) : List.of();
         boolean serveFull = ranges.isEmpty() || ifRangeMismatch;
 
         ResourceRegion region;
