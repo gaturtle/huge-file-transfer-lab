@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 1 — Why Chunk and Resume</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<p class="kicker">Lesson 1 of the Huge File Transfer Lab · Concept + your own code</p>
+<h1>Why Chunk, Why Resume</h1>
+
+<p>Imagine you're uploading a 5GB video file from a browser to a server, over home Wi-Fi, to a box with <strong>1GB of RAM</strong>. Two things go wrong with the naive approach — <code>&lt;input type="file"&gt;</code> → one big <code>POST</code> of the whole file:</p>
+
+<ol>
+<li><strong>Memory.</strong> If the server reads the whole request body into memory before processing it, a 5GB upload alone blows past a 1GB box. It doesn't matter how good your code is — the file doesn't fit.</li>
+<li><strong>Fragility.</strong> Home Wi-Fi drops. If the connection dies at byte 4.9GB of 5GB, a single-request upload has to restart from byte zero. On a slow link, that's the difference between "annoying" and "never actually finishes."</li>
+</ol>
+
+<p>This is exactly the problem your project's <a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/CONTEXT.md">CONTEXT.md</a> domain model exists to solve, and it's the same problem tools like <a href="https://tus.io/protocols/resumable-upload/1-0-x">tus</a> and S3's multipart upload solve — just with different wire formats. The <em>pattern</em> is the same everywhere; only the details differ.</p>
+
+<h2>The core idea: split, track, resume</h2>
+
+<p>Instead of one giant request, the client slices the file into fixed-size pieces — in this project, <strong>8MiB Chunks</strong> — and uploads them one at a time (or a few in parallel). The server doesn't just receive bytes; it keeps a record of <em>which chunks it has</em>. That record is the <strong>Upload Session</strong>.</p>
+
+<p>This one move — tracking progress at the chunk level instead of the whole-file level — is what buys you both properties at once:</p>
+
+<ul>
+<li><strong>Bounded memory</strong>: the server only ever holds one 8MiB chunk in flight, never the whole file.</li>
+<li><strong>Resumability</strong>: if the connection dies mid-upload, the client asks "which chunks do you already have?" and sends only the rest. Nothing already-received is wasted.</li>
+</ul>
+
+<div class="callout">
+<strong>This is not a hypothetical.</strong> Your project's load test (<a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/18">issue #18</a>) proved it: a 5GB upload through this exact mechanism peaked at ~338MB of memory — comfortably inside a 1GB box — with no OOM kill.
+</div>
+
+<h2>The state machine you actually built</h2>
+
+<p>Your Upload Session isn't just "has some chunks" — it moves through explicit states, decided in <a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/3">issue #3</a>:</p>
+
+<div class="state-diagram">
+  <span class="state">UPLOADING</span>
+  <span class="arrow">→</span>
+  <span class="state">ASSEMBLING</span>
+  <span class="arrow">→</span>
+  <span class="state terminal">COMPLETE</span>
+  <span class="arrow">or</span>
+  <span class="state terminal">FAILED</span>
+</div>
+
+<p><strong>UPLOADING</strong> is where chunks arrive, tracked by a per-session bitset (<a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/4">issue #4</a> — SQLite-backed). Once every chunk index has arrived, the client tells the server to finish, and the session moves to <strong>ASSEMBLING</strong> — a single checksum pass over the reassembled file. That resolves to <strong>COMPLETE</strong> (checksum matched) or <strong>FAILED</strong> (it didn't) — both terminal. A <code>FAILED</code> session is never resumed; the client opens a fresh one.</p>
+
+<p>Notice what's <em>not</em> in this state machine: there's no "paused" state on the server. Pause/resume is entirely a client-side decision about <em>when</em> to keep sending chunks — the server doesn't need to know the difference between "briefly paused" and "connection just dropped." That simplification is only possible because progress is tracked per-chunk, durably, on the server.</p>
+
+<div class="quiz" data-answer="failed" data-hint="it's the other terminal state besides COMPLETE, and it means the client must start over">
+<p class="q">If Assembly's whole-file checksum doesn't match the Manifest, which single state does the Upload Session end up in?</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="one word, uppercase state name">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<div class="quiz" data-answer="bitset" data-hint="a compact per-session record of which chunk indices have arrived — issue #4's storage decision">
+<p class="q">What server-side data structure lets a client resume by asking "which chunks do you already have?"</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="one word">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<h2>Reference</h2>
+<p>The full state table and the "why this shape" reasoning is compressed into <a href="../reference/upload-session-state-machine.html">Reference: Upload Session State Machine</a> — worth printing and keeping next to you for later lessons.</p>
+
+<div class="callout source">
+<p><a href="https://tus.io/protocols/resumable-upload/1-0-x">tus.io — Resumable Upload Protocol 1.0.x</a>. Read the "Core Protocol" section only (skip the extensions for now). Notice how your project borrowed tus's offset/409 conflict pattern (per <a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/2">issue #2</a>'s research) without adopting its full header format — a deliberate, scoped borrowing, not a rewrite of tus from scratch.</p>
+</div>
+
+<h2>What's next</h2>
+<p>This lesson covered <em>why</em> the pattern exists and the state machine's shape. The next lesson will get concrete: why CRC32C for chunks but SHA-256 for the whole file — a decision driven by CPU budget, not habit (ADR 0002).</p>
+
+<div class="callout ask">
+<p>If anything here didn't click — the state machine, why FAILED can't resume, why bounded memory matters — ask your teacher (me) directly before moving on. This is a conversation, not a reading assignment.</p>
+</div>
+
+<footer class="lesson-nav">
+<span>Huge File Transfer Lab — Lesson 1</span>
+<span>Next: checksums &amp; CPU budget (not yet written)</span>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

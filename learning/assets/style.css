@@ -1,0 +1,198 @@
+/* Shared stylesheet for the Huge File Transfer Lab teaching workspace.
+   Tufte-ish: serif reading type, generous margins, quiet color, print-friendly. */
+
+:root {
+  --ink: #1a1a1a;
+  --ink-soft: #4a4a4a;
+  --paper: #fdfcf9;
+  --paper-alt: #f4f1ea;
+  --rule: #d8d2c4;
+  --accent: #8a3b12;
+  --accent-soft: #c9702f;
+  --good: #2f6d3f;
+  --bad: #a6332f;
+  --code-bg: #f0ede4;
+  --max-width: 42rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8e4da;
+    --ink-soft: #b8b2a3;
+    --paper: #1c1a16;
+    --paper-alt: #24211c;
+    --rule: #3a352c;
+    --accent: #e0975a;
+    --accent-soft: #c9702f;
+    --good: #6fbf83;
+    --bad: #e0736f;
+    --code-bg: #2a2620;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  font-size: 19px;
+  line-height: 1.55;
+  max-width: var(--max-width);
+  margin: 3rem auto 6rem;
+  padding: 0 1.5rem;
+}
+
+h1, h2, h3 {
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+h1 {
+  font-size: 1.9rem;
+  margin-bottom: 0.2rem;
+  border-bottom: 2px solid var(--rule);
+  padding-bottom: 0.6rem;
+}
+
+.kicker {
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  color: var(--accent);
+  margin: 0 0 0.4rem;
+}
+
+h2 {
+  font-size: 1.3rem;
+  margin-top: 2.2rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1.2rem;
+}
+
+h3 { font-size: 1.05rem; margin-top: 1.5rem; }
+
+p, li { color: var(--ink); }
+
+a { color: var(--accent); text-decoration-color: var(--accent-soft); }
+a:hover { color: var(--accent-soft); }
+
+code, pre {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--code-bg);
+  border-radius: 4px;
+}
+
+code { padding: 0.1em 0.35em; }
+
+pre {
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  line-height: 1.4;
+}
+pre code { background: none; padding: 0; }
+
+blockquote {
+  margin: 1.2rem 0;
+  padding: 0.2rem 1rem;
+  border-left: 3px solid var(--accent-soft);
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.callout {
+  background: var(--paper-alt);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  margin: 1.4rem 0;
+}
+
+.callout.source::before { content: "Primary source"; }
+.callout.ask::before { content: "Ask your teacher"; }
+.callout::before {
+  display: block;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  color: var(--accent);
+  margin-bottom: 0.4rem;
+}
+
+.state-diagram {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1.4rem 0;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 0.85rem;
+}
+.state-diagram .state {
+  border: 1.5px solid var(--ink-soft);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  white-space: nowrap;
+}
+.state-diagram .state.terminal { border-style: double; border-width: 3px; }
+.state-diagram .arrow { color: var(--ink-soft); }
+
+/* --- Quiz component --- */
+.quiz {
+  background: var(--paper-alt);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1.2rem 1.2rem 1.4rem;
+  margin: 1.6rem 0;
+}
+.quiz .q { font-weight: 600; margin-bottom: 0.6rem; }
+.quiz input[type="text"] {
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.4rem 0.6rem;
+  width: 100%;
+  max-width: 22rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.quiz button {
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 0.85rem;
+  margin-left: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--ink-soft);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+.quiz button:hover { background: var(--rule); }
+.quiz .feedback {
+  margin-top: 0.6rem;
+  font-size: 0.9rem;
+  min-height: 1.2em;
+}
+.quiz .feedback.correct { color: var(--good); }
+.quiz .feedback.incorrect { color: var(--bad); }
+
+footer.lesson-nav {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  display: flex;
+  justify-content: space-between;
+}
+
+@media print {
+  body { max-width: 100%; }
+  .quiz button { display: none; }
+}
