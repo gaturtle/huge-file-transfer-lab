@@ -56,17 +56,15 @@ worth keeping, in the summary comment on issue #18.
 ## Real-server smoke test
 
 Once [issue #16](https://github.com/gaturtle/huge-file-transfer-lab/issues/16)
-(provision and deploy to the target server) has the backend actually running at
-`159.223.48.162`, point `client.js` at it directly — no container orchestration needed,
-the server *is* the constrained environment:
+(provision and deploy to the target server) has the backend actually running,
+`run-remote-smoke.sh` drives the same `client.js` against it directly — no container
+orchestration needed, the server *is* the constrained environment (`docker-compose.yml`'s
+`mem_limit`/`-Xmx`, issue #8) — while sampling `docker stats` on the server over SSH:
 
 ```bash
-node scripts/loadtest/generate-file.js --out /tmp/synthetic-5gb.bin --size-mb 5120
-node scripts/loadtest/client.js --file /tmp/synthetic-5gb.bin --base-url https://<domain>
+scripts/loadtest/run-remote-smoke.sh --host root@<server> --base-url https://<domain>
 ```
 
-Watch memory on the server concurrently, e.g. from a second SSH session:
-
-```bash
-ssh root@159.223.48.162 'while true; do date; docker stats --no-stream; sleep 2; done'
-```
+Note: JVM heap sampling via Actuator (as used by `run-local.sh`) isn't available here
+until a build including the `spring-boot-starter-actuator` dependency has been deployed —
+`run-remote-smoke.sh` only samples container memory (`docker stats`).
