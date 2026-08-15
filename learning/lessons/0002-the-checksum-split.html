@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 2 — The Checksum Split</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<p class="kicker">Lesson 2 of the Huge File Transfer Lab · Concept + your own code</p>
+<h1>One Hash Isn't Enough: The Checksum Split</h1>
+
+<p>Lesson 1 established the shape: chunks, an Upload Session, a bitset tracking what's arrived. But chunks can still arrive <em>corrupted</em> — a truncated request, a flaky disk sector, a flipped bit on the wire. Something needs to verify integrity. The obvious move is "hash everything with SHA-256, it's the strong, trusted choice." Your project deliberately didn't do that everywhere. Understanding why is the point of this lesson.</p>
+
+<h2>The naive answer breaks the CPU budget</h2>
+
+<p>Your server has <strong>1 shared vCPU</strong> — the same core running Spring Boot's request handling, disk I/O, <em>and</em> whatever hashing you ask it to do. SHA-256 is a cryptographic hash: it's deliberately expensive to compute, because that expense is what makes it collision-resistant against an adversary trying to forge a hash. Hashing every 8MiB chunk of a 5GB upload with SHA-256 means paying that cost roughly 640 times per file, competing with everything else for the one core you have.</p>
+
+<p>CRC32C is a different kind of hash entirely — non-cryptographic, and on modern x86 CPUs (basically anything since Intel Nehalem) it runs on a dedicated hardware instruction (SSE4.2 <code>crc32</code>). That hardware acceleration puts its theoretical throughput around <strong>20.5 GB/s per core</strong> — roughly an order of magnitude past what a general-purpose cryptographic hash manages on the same core.</p>
+
+<div class="callout">
+<strong>The trap to avoid:</strong> "SHA-256 is stronger, so use it everywhere" sounds like the safe default. But strength that costs CPU you don't have isn't safety — it's a bottleneck disguised as caution. The right question isn't "which hash is strongest," it's <strong>"what am I actually defending against, and what can I afford to pay for it?"</strong>
+</div>
+
+<h2>Match the hash to the threat model</h2>
+
+<p>This is the move your project's <a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/docs/adr/0002-split-checksum-algorithm.md">ADR 0002</a> makes explicit. Ask: <em>who or what is this checksum defending against?</em></p>
+
+<ul>
+<li><strong>Accidental corruption</strong> — truncated request, flaky disk, a bit flipped in transit. This is the actual threat for a single trusted user uploading their own files. CRC32C catches this cheaply and immediately.</li>
+<li><strong>Deliberate forgery</strong> — an attacker crafting bytes that hash to the same value to slip corrupted or malicious data past your checksum unnoticed. This is what SHA-256's collision-resistance defends against — and it's <em>not</em> your threat model here. There's no untrusted uploader in a single-user lab.</li>
+</ul>
+
+<p>So the split isn't "fast hash vs. strong hash, pick one." It's <strong>two different hashes for two different jobs</strong>, applied at two different points:</p>
+
+<ul>
+<li><strong>CRC32C, per chunk, checked on arrival.</strong> Cheap enough to run ~640 times per 5GB file without denting the CPU budget. Catches the accidental-corruption threat immediately — you find out a chunk is bad the moment it lands, not after the whole file is assembled.</li>
+<li><strong>SHA-256, once, over the whole assembled file, at Assembly.</strong> Expensive, but paid exactly once per upload instead of once per chunk — the cost that would be prohibitive 640 times over is fine as a single pass. This gives you a strong end-to-end guarantee at the point it's cheapest to afford.</li>
+</ul>
+
+<div class="callout">
+<strong>Not a hypothetical trend, either.</strong> Even Amazon S3 — built for a much larger threat surface than this lab — <a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html">now defaults new multipart uploads to CRC64NVME</a> instead of a SHA-family hash, explicitly favoring a fast CRC variant for routine integrity checking. The industry has been converging on exactly this split, not away from it.</p>
+</div>
+
+<div class="quiz" data-answer="deliberate forgery" data-hint="two words — the thing CRC32C does NOT protect against, which is why this lab doesn't need SHA-256 everywhere">
+<p class="q">CRC32C protects against accidental corruption. What threat does it deliberately NOT protect against — the one SHA-256 exists for?</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="two words">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<div class="quiz" data-answer="assembly" data-hint="the state your Upload Session enters right before COMPLETE or FAILED — see lesson 1's state machine">
+<p class="q">At which single point in the Upload Session's lifecycle does the one SHA-256 pass over the whole file happen?</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="one word, from lesson 1's state machine">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<h2>The pattern, generalized</h2>
+
+<p>Strip away the specific algorithms and this is a reusable move for <em>any</em> resource-constrained system doing integrity checking at scale:</p>
+
+<ol>
+<li>Identify what you're actually defending against — accidental failure, or a deliberate adversary. They're different problems with different-cost solutions.</li>
+<li>Apply the cheap defense at high frequency (per-unit, catches problems early, minimal resource cost).</li>
+<li>Reserve the expensive defense for the lowest frequency you can get away with (once per whole operation, not once per piece).</li>
+</ol>
+
+<p>This is the same shape as, say, a build pipeline running fast linters on every save but a full expensive test suite only on merge — or a database checksumming pages cheaply on every read but running an expensive deep-consistency check only nightly. Once you see "cheap-often + expensive-rarely, matched to the actual threat" as a pattern, you'll recognize when a project is over-paying for uniform strength it doesn't need.</p>
+
+<div class="callout source">
+<p>Your project's own research writeup: <a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/research/modern-huge-file-transfer/docs/research/modern-huge-file-transfer.md">docs/research/modern-huge-file-transfer.md, §5 "Checksum / integrity strategies"</a> — read this section directly for the sourced throughput numbers (CRC32C's ~20.5 GB/s/core figure, xxHash's portability tradeoffs, S3's CRC64NVME shift) behind everything in this lesson.</p>
+</div>
+
+<h2>What's next</h2>
+<p>Lessons 1 and 2 covered the upload side's shape (chunk + resume) and its integrity strategy (checksum split). The next lesson moves to the <em>download</em> side — how HTTP Range requests give you resumable, parallel download almost for free once the upload side already exists, and why that's a genuinely different mechanism from Chunks (issue #5's design).</p>
+
+<div class="callout ask">
+<p>If the CPU-budget reasoning felt hand-wavy, or you want to see the actual CRC32C/SHA-256 code in <code>backend/</code>, ask your teacher (me) now — that's exactly what this conversation is for.</p>
+</div>
+
+<footer class="lesson-nav">
+<span><a href="0001-why-chunk-and-resume.html">← Lesson 1: Why Chunk and Resume</a></span>
+<span>Next: Range requests &amp; download resume (not yet written)</span>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
