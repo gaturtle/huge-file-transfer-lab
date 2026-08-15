@@ -54,12 +54,33 @@ function assert(cond, msg) {
   if (!cond) throw new Error(`assertion failed: ${msg}`);
 }
 
-async function fullRoundTrip(filePath, sizeLabel) {
+// Range/If-Range edge cases from issue #5's protocol. Deliberately run against a small
+// completed session: a stale If-Range makes the server fall back to serving the FULL
+// body (by design - ifRangeMismatch => serveFull), so doing this against a multi-GB
+// file would silently re-transfer the whole thing a second time just to check headers.
+async function rangeEdgeCases(uploadId, checksum) {
+  const noRangeRes = await fetch(`${baseUrl}/uploads/${uploadId}/download`);
+  assert(noRangeRes.status === 200, `no-Range request expected 200, got ${noRangeRes.status}`);
+  const etag = noRangeRes.headers.get('etag');
+  await noRangeRes.body?.cancel();
+  assert(etag === `"${checksum}"`, `ETag ${etag} should be the whole-file SHA-256`);
+
+  const staleIfRange = await downloadRange(baseUrl, uploadId, 0, CHUNK_SIZE - 1, { 'If-Range': '"stale-etag"' });
+  assert(staleIfRange.status === 200, `stale If-Range should fall back to full 200, got ${staleIfRange.status}`);
+  await staleIfRange.body?.cancel();
+
+  const freshIfRange = await downloadRange(baseUrl, uploadId, 0, CHUNK_SIZE - 1, { 'If-Range': etag });
+  assert(freshIfRange.status === 206, `fresh If-Range should serve 206, got ${freshIfRange.status}`);
+  await freshIfRange.arrayBuffer();
+  console.log('  no-Range (200), stale If-Range (200 full body), fresh If-Range (206) all behave per protocol');
+}
+
+async function uploadBig(filePath) {
   const stat = fs.statSync(filePath);
   const totalSize = stat.size;
   const filename = path.basename(filePath);
   const checksum = await sha256OfFile(filePath);
-  console.log(`  ${sizeLabel}: ${(totalSize / 1024 / 1024).toFixed(0)} MiB, sha256=${checksum}`);
+  console.log(`  big file: ${(totalSize / 1024 / 1024).toFixed(0)} MiB, sha256=${checksum}`);
 
   const { uploadId, chunkCount } = await createSession(baseUrl, filename, totalSize, checksum);
   console.log(`  session ${uploadId}: ${chunkCount} chunks`);
@@ -76,21 +97,10 @@ async function fullRoundTrip(filePath, sizeLabel) {
   assert(completeResult.body.state === 'COMPLETE', `expected COMPLETE, got ${completeResult.body.state}`);
   console.log('  Assembly + whole-file checksum verified server-side');
 
-  // Range-request edge cases (issue #5's protocol) before the full parallel download.
-  const noRangeRes = await fetch(`${baseUrl}/uploads/${uploadId}/download`);
-  assert(noRangeRes.status === 200, `no-Range request expected 200, got ${noRangeRes.status}`);
-  await noRangeRes.arrayBuffer();
-  const etag = noRangeRes.headers.get('etag');
-  assert(etag === `"${checksum}"`, `ETag ${etag} should be the whole-file SHA-256`);
+  return { uploadId, totalSize, checksum, chunkCount };
+}
 
-  const staleIfRange = await downloadRange(baseUrl, uploadId, 0, CHUNK_SIZE - 1, { 'If-Range': '"stale-etag"' });
-  assert(staleIfRange.status === 200, `stale If-Range should fall back to full 200, got ${staleIfRange.status}`);
-  await staleIfRange.arrayBuffer();
-
-  const freshIfRange = await downloadRange(baseUrl, uploadId, 0, CHUNK_SIZE - 1, { 'If-Range': etag });
-  assert(freshIfRange.status === 206, `fresh If-Range should serve 206, got ${freshIfRange.status}`);
-  await freshIfRange.arrayBuffer();
-
+async function downloadBig(filePath, { uploadId, totalSize, checksum, chunkCount }) {
   const downloadPath = filePath + '.downloaded';
   const downloadStart = Date.now();
   const { etag: parallelEtag } = await downloadFileParallel(baseUrl, uploadId, totalSize, downloadPath, concurrency);
@@ -102,8 +112,6 @@ async function fullRoundTrip(filePath, sizeLabel) {
   assert(downloadedChecksum === checksum, `downloaded file checksum ${downloadedChecksum} != uploaded ${checksum}`);
   console.log('  downloaded file SHA-256 matches uploaded file');
   fs.unlinkSync(downloadPath);
-
-  return { uploadId, totalSize, checksum, chunkCount };
 }
 
 async function pauseResume(filePath) {
@@ -240,27 +248,72 @@ async function wholeFileChecksumMismatchIsTerminal(filePath) {
   console.log('  fresh session (new Upload Id) with the correct checksum completed successfully');
 }
 
+// `--phase` splits a multi-GB run across several process invocations (each with its own
+// wall-clock budget) instead of one long-lived process: big-upload, big-download,
+// rest (the four smaller behavioral tests + range edge cases on a small file), or
+// all (everything in one process - fine at small/local scale).
+const phase = getArg('phase', 'all');
+const statePath = path.join(workDir, 'big-session-state.json');
+
 async function main() {
   fs.mkdirSync(workDir, { recursive: true });
   console.log(`Target: ${baseUrl}`);
   console.log(`Work dir: ${workDir}`);
+  console.log(`Phase: ${phase}`);
 
   const bigPath = path.join(workDir, `big-${bigSizeMb}mb.bin`);
   const smallPath = path.join(workDir, `small-${smallSizeMb}mb.bin`);
-  if (!fs.existsSync(bigPath) || fs.statSync(bigPath).size !== bigSizeMb * 1024 * 1024) {
-    console.log(`Generating ${bigSizeMb} MiB synthetic file...`);
-    generateFile(bigPath, bigSizeMb);
+
+  if (phase === 'big-upload' || phase === 'all') {
+    if (!fs.existsSync(bigPath) || fs.statSync(bigPath).size !== bigSizeMb * 1024 * 1024) {
+      console.log(`Generating ${bigSizeMb} MiB synthetic file...`);
+      generateFile(bigPath, bigSizeMb);
+    }
   }
-  if (!fs.existsSync(smallPath) || fs.statSync(smallPath).size !== smallSizeMb * 1024 * 1024) {
-    console.log(`Generating ${smallSizeMb} MiB synthetic file...`);
-    generateFile(smallPath, smallSizeMb);
+  if (phase === 'rest' || phase === 'all') {
+    if (!fs.existsSync(smallPath) || fs.statSync(smallPath).size !== smallSizeMb * 1024 * 1024) {
+      console.log(`Generating ${smallSizeMb} MiB synthetic file...`);
+      generateFile(smallPath, smallSizeMb);
+    }
   }
 
-  await test(`full upload+download round trip (${bigSizeMb} MiB)`, () => fullRoundTrip(bigPath, 'big file'));
-  await test('pause and resume mid-upload', () => pauseResume(smallPath));
-  await test('recover from a simulated network interruption', () => networkInterruption(smallPath));
-  await test('per-chunk checksum mismatch, then retry', () => chunkChecksumMismatchRetry(smallPath));
-  await test('whole-file checksum mismatch is terminal, fresh session recovers', () => wholeFileChecksumMismatchIsTerminal(smallPath));
+  if (phase === 'big-upload') {
+    let state;
+    await test(`upload+Assembly (${bigSizeMb} MiB)`, async () => {
+      state = await uploadBig(bigPath);
+    });
+    if (state) fs.writeFileSync(statePath, JSON.stringify(state));
+  } else if (phase === 'big-download') {
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    await test(`download+verify (${bigSizeMb} MiB)`, () => downloadBig(bigPath, state));
+  } else if (phase === 'rest') {
+    let smallState;
+    await test('small upload+download round trip + Range/If-Range edge cases', async () => {
+      smallState = await uploadBig(smallPath);
+      await downloadBig(smallPath, smallState);
+      await rangeEdgeCases(smallState.uploadId, smallState.checksum);
+    });
+    await test('pause and resume mid-upload', () => pauseResume(smallPath));
+    await test('recover from a simulated network interruption', () => networkInterruption(smallPath));
+    await test('per-chunk checksum mismatch, then retry', () => chunkChecksumMismatchRetry(smallPath));
+    await test('whole-file checksum mismatch is terminal, fresh session recovers', () => wholeFileChecksumMismatchIsTerminal(smallPath));
+  } else {
+    let bigState;
+    await test(`full upload+download round trip (${bigSizeMb} MiB)`, async () => {
+      bigState = await uploadBig(bigPath);
+      await downloadBig(bigPath, bigState);
+    });
+    let smallState;
+    await test('small file Range/If-Range edge cases', async () => {
+      smallState = await uploadBig(smallPath);
+      await downloadBig(smallPath, smallState);
+      await rangeEdgeCases(smallState.uploadId, smallState.checksum);
+    });
+    await test('pause and resume mid-upload', () => pauseResume(smallPath));
+    await test('recover from a simulated network interruption', () => networkInterruption(smallPath));
+    await test('per-chunk checksum mismatch, then retry', () => chunkChecksumMismatchRetry(smallPath));
+    await test('whole-file checksum mismatch is terminal, fresh session recovers', () => wholeFileChecksumMismatchIsTerminal(smallPath));
+  }
 
   console.log('\n=== Summary ===');
   for (const r of results) {
