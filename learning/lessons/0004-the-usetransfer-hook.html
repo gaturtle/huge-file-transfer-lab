@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 4 — The useTransfer Hook</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<p class="kicker">Lesson 4 of the Huge File Transfer Lab · Concept + your own code</p>
+<h1>One State Machine, Two Directions</h1>
+
+<p>Lessons 1–3 built the protocol: chunk + resume on upload, a checksum split matched to threat model, and Range requests reusing an existing standard on download. Two different mechanisms, two different endpoints — but by the time the frontend needed to drive both, your project noticed something: <strong>upload and download are the same state machine wearing different clothes.</strong> That recognition is what <code>useTransfer</code> is built on.</p>
+
+<h2>Spot the shared shape first</h2>
+
+<p>Look at what upload and download both actually need, independent of direction:</p>
+
+<ul>
+<li>A record of which pieces have been transferred so far — a <strong>bitset</strong> (Lesson 1's chunk bitset; Lesson 3's range bitset — same idea, same 8MiB unit, different endpoint).</li>
+<li>Byte-level progress, computed off that bitset, not a raw chunk count.</li>
+<li>Pause (stop sending new requests, keep state) and cancel (stop and discard state).</li>
+<li>Retry with backoff when a single unit fails.</li>
+<li>A concurrency ceiling — 3–4 units in flight at once, from the same CPU-budget reasoning that shaped Lessons 2 and 3.</li>
+</ul>
+
+<p>None of that list mentions "chunk" or "range" specifically. It's direction-agnostic. What <em>does</em> differ between upload and download is narrow: how you get one unit of data, how you send/fetch it, and how you persist progress across browser sessions.</p>
+
+<div class="callout">
+<strong>This is the same design move as Lesson 2's checksum split</strong> — separate what's genuinely different (fast-vs-strong hash) from what can be unified (one Checksum concept, two algorithms). Here it's: separate what's genuinely direction-specific (get/send a unit) from what's shared (track progress, pause, retry, throttle concurrency). Once you can name which parts of two similar-looking problems are actually the same, the shared part becomes one implementation instead of two.
+</div>
+
+<h2>What your project actually built</h2>
+
+<p>From <a href="https://github.com/gaturtle/huge-file-transfer-lab/issues/6">issue #6</a>'s design, implemented in <a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/frontend/src/hooks/useTransfer.ts">frontend/src/hooks/useTransfer.ts</a>:</p>
+
+<ul>
+<li><strong>One core hook, <code>useTransfer</code></strong>, owns the shared state machine — bitset, byte-progress math, pause/cancel, retry-with-backoff, the concurrency queue. It's parameterized by a small interface: "how do I send/fetch one unit" and "how do I persist state" are supplied by the caller, not baked in.</li>
+<li><strong>Two thin wrappers</strong>, <a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/frontend/src/hooks/useUploadTransfer.ts"><code>useUploadTransfer</code></a> and <a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/frontend/src/hooks/useDownloadTransfer.ts"><code>useDownloadTransfer</code></a>, supply only the direction-specific pieces: Manifest creation vs. status-check, chunk <code>PUT</code> vs. range <code>GET</code>, a lazy <code>File.slice()</code> read vs. a File System Access write.</li>
+<li><strong>Concurrency</strong> (3–4 units in flight) is owned by the core hook as a small worker-pool queue — it pulls pending chunk/range indices, fires a request per open slot, and refills as each settles. This isn't something the networking library gives you for free; the hook supplies it.</li>
+<li><strong>Retry</strong> rides on TanStack Query's built-in mutation backoff — a checksum mismatch (Lesson 2's per-chunk CRC32C check failing server-side) is treated exactly like a network error: same index, re-sent.</li>
+<li><strong>Progress</strong> is computed in bytes, read off the bitset — <code>(completed units × 8MiB) + exact size of a completed final unit</code>, divided by total size — not a raw count of completed chunks. A byte-accurate progress bar and a chunk-count one look identical until the last, undersized chunk throws the count-based version off.</li>
+</ul>
+
+<h3>Where hashing lives</h3>
+
+<p>One detail that's easy to miss: CRC32C and SHA-256 (Lesson 2) run in a <strong>Web Worker that only hashes</strong> — it takes an <code>ArrayBuffer</code>, returns a checksum via <code>postMessage</code>, and does nothing else. Networking stays on the main thread through TanStack Query, so its devtools, caching, and retry all keep working normally. This is a narrow, deliberate split: move the CPU-heavy part off the render thread, but don't drag networking along with it just because both happen to touch the same chunk of bytes.</p>
+
+<div class="quiz" data-answer="concurrency queue" data-hint="two words — the small worker-pool piece that pulls pending chunk/range indices and fires requests up to a 3-4 ceiling; TanStack Query doesn't supply this itself">
+<p class="q">TanStack Query has no built-in N-at-a-time primitive. What piece does useTransfer itself have to supply to get 3-4 units in flight at once?</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="two words">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<div class="quiz" data-answer="hashing" data-hint="one word — the only job given to the Web Worker; networking deliberately stays on the main thread">
+<p class="q">The Web Worker used by useTransfer is scoped to do exactly one kind of work. What is it?</p>
+<input type="text" autocomplete="off" spellcheck="false" placeholder="one word">
+<button>Check</button>
+<p class="feedback"></p>
+</div>
+
+<h2>Pause and cancel aren't symmetric</h2>
+
+<p>Both stop in-flight requests via an <code>AbortController</code> — no request keeps running unsupervised. But they diverge on what happens to state:</p>
+
+<ul>
+<li><strong>Pause</strong> keeps everything: the server-side Upload Session stays <code>UPLOADING</code> (Lesson 1's state machine — already-received chunks are kept), and the local IndexedDB bitset stays intact. Resume just continues pulling from the same queue.</li>
+<li><strong>Cancel</strong> does the same abort, then deletes the local IndexedDB record. Notice there's <strong>no cancel endpoint</strong> on the server — an abandoned session is simply left to expire via the 24h TTL sweep from Lesson 1's reference sheet (issue #4). The client doesn't need to tell the server "I quit"; the server's own cleanup already handles that case.</li>
+</ul>
+
+<p>That's a small but real design choice: rather than building a cancellation protocol, the project noticed an existing mechanism (the TTL sweep, already needed for crashed browsers and dead connections) already covers the "user cancelled" case too. One less endpoint, one less thing that can get out of sync.</p>
+
+<div class="callout source">
+<p><a href="https://github.com/gaturtle/huge-file-transfer-lab/blob/main/frontend/src/hooks/useTransfer.ts">frontend/src/hooks/useTransfer.ts</a> — read the core hook directly alongside its two wrappers. Seeing how little <code>useUploadTransfer</code> and <code>useDownloadTransfer</code> actually contain is the clearest evidence of how much got successfully unified.</p>
+</div>
+
+<h2>The pattern, generalized</h2>
+
+<p>Whenever two features look similar but not identical — upload/download here, but just as easily "create" and "edit" forms, or "import" and "export" pipelines — the move is: list what's actually shared (state, progress, retry, throttling) separately from what's genuinely different (the one send/fetch primitive), then build exactly one implementation of the shared part with a narrow seam for the differences. Unifying too early (forcing download to literally reuse an upload-shaped function) or too late (two parallel, drifting copies of the same state machine) both cost you later — the seam has to sit exactly where the real difference is, no wider.</p>
+
+<h2>What's next</h2>
+<p>Lessons 1–4 now cover the whole client/server transfer story. A natural next lesson is the deployment shape — two containers, nginx as a TLS-terminating reverse proxy, CI building and pushing so the server only ever pulls (issue #8) — moving from "how the transfer works" to "how it runs in production on a 1GB box."</p>
+
+<div class="callout ask">
+<p>If the pause/cancel asymmetry or the worker-vs-main-thread split feels underexplained, or you want to trace an actual chunk upload through <code>useUploadTransfer</code> line by line, ask your teacher (me) now.</p>
+</div>
+
+<footer class="lesson-nav">
+<span><a href="0003-range-requests-and-download-resume.html">← Lesson 3: Range Requests and Download Resume</a></span>
+<span>Next: deployment shape (not yet written)</span>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
